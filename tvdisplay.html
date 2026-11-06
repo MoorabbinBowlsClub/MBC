@@ -710,7 +710,7 @@ async function loadConfig(){const url=CONFIG_CSV+(CONFIG_CSV.includes('?')?'&':'
  return {count:selected.length,metadataFailures:meta.filter(x=>!x).length};
 }
 
-let screenIndex=0, running=true, screens=[];
+let screenIndex=0, running=true, screens=[], allScreens=[], scheduleMode='ALL';
 const SCREEN_DURATION_MS=20000;
 let screenDeadline=Date.now()+SCREEN_DURATION_MS;
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -1265,6 +1265,7 @@ async function loadAll(){
 }
 function buildScreens(){
  const root=document.getElementById('screens');
+ root.innerHTML='';
  root.insertAdjacentHTML('beforeend',`<section id="consolidatedResults" class="screen"></section>`);
  root.insertAdjacentHTML('beforeend',`<section id="saturdayLadders" class="screen"></section>`);
  root.insertAdjacentHTML('beforeend',`<section id="saturdayRinks" class="screen"><iframe id="rinkDisplayFrame" title="Saturday rink scores and Moorabbin players" src="Saturday_Rinks_v7.html?v=7" loading="eager"></iframe></section>`);
@@ -1273,9 +1274,27 @@ function buildScreens(){
  root.insertAdjacentHTML('beforeend',`<section id="midweekLadders" class="screen"></section>`);
  root.insertAdjacentHTML('beforeend',`<section id="tuesdayResults" class="screen"></section>`);
  root.insertAdjacentHTML('beforeend',`<section id="tuesdayLadders" class="screen"></section>`);
- screens=[...document.querySelectorAll('.screen')];show();
+ allScreens=[...root.querySelectorAll('.screen')];
+ setScheduleMode(true);
 }
-function show(){screens.forEach((s,i)=>s.classList.toggle('active',i===screenIndex))}
+function isSaturdayAfternoonWindow(){
+ const parts=new Intl.DateTimeFormat('en-AU',{timeZone:'Australia/Melbourne',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());
+ const values=Object.fromEntries(parts.map(p=>[p.type,p.value]));
+ const minutes=Number(values.hour)*60+Number(values.minute);
+ return values.weekday==='Sat' && minutes>=16*60 && minutes<20*60;
+}
+function setScheduleMode(force=false){
+ const nextMode=isSaturdayAfternoonWindow()?'SATURDAY':'ALL';
+ if(!force && nextMode===scheduleMode)return;
+ scheduleMode=nextMode;
+ const saturdayIds=new Set(['consolidatedResults','saturdayLadders','saturdayRinks']);
+ screens=allScreens.filter(el=>scheduleMode==='SATURDAY'?saturdayIds.has(el.id):true);
+ screenIndex=0;
+ if(!running)pausedRemaining=SCREEN_DURATION_MS;
+ resetScreenCountdown();
+ show();
+}
+function show(){screens.forEach((s,i)=>s.classList.toggle('active',i===screenIndex)); allScreens.forEach(s=>{if(!screens.includes(s))s.classList.remove('active')});}
 function resetScreenCountdown(){screenDeadline=Date.now()+SCREEN_DURATION_MS;updateCountdown()}
 function next(){screenIndex=(screenIndex+1)%screens.length;show();resetScreenCountdown()}
 function prev(){screenIndex=(screenIndex-1+screens.length)%screens.length;show();resetScreenCountdown()}
@@ -1304,6 +1323,8 @@ async function startDisplay(){
   await Promise.all([loadAll(),loadMidweekLatestResults()]);
   setInterval(loadMidweekLatestResults,60000);
   setInterval(loadAll,15000);
+  // Switch between Saturday-only and full-club content using Melbourne local time.
+  setInterval(()=>setScheduleMode(),15000);
   // Re-read the sheet periodically so Active, ID, section and order changes flow through without editing HTML.
   setInterval(async()=>{try{const old=JSON.stringify([SIDES,MIDWEEK,TUESDAY,THURSDAY]);await loadConfig();const now=JSON.stringify([SIDES,MIDWEEK,TUESDAY,THURSDAY]);if(old!==now){screenIndex=0;buildScreens();}await Promise.all([loadAll(),loadMidweekLatestResults()]);}catch(e){console.error('Configuration refresh:',e);}},60000);
  }catch(e){
