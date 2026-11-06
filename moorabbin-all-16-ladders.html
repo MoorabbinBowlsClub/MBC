@@ -12,7 +12,7 @@ main{max-width:1600px;margin:0 auto;padding:18px}.status{display:flex;justify-co
 @media(max-width:850px){.cards{grid-template-columns:1fr}main{padding:12px}.card-head{padding:10px}}
 </style></head><body>
 <header><div><h1>MOORABBIN BOWLS CLUB</h1><div class="subtitle">Pennant ladders · All active sides · Live from BowlsLink</div></div><div class="header-right"><span id="updated">Loading…</span><button class="btn" id="refresh">Refresh now ↻</button></div></header>
-<main><div class="status"><span id="status">Reading Pennant Links configuration…</span><span>Automatic refresh every 60 seconds</span></div><div id="error" class="error"></div><div id="content"></div><div class="foot">Ladder points and results sourced from BowlsLink · Moorabbin teams highlighted · Updated automatically every 60 seconds</div></main>
+<main><div class="status"><span id="status">Reading Pennant Links configuration…</span><span>Automatic refresh every 60 seconds</span></div><div id="error" class="error"></div><div id="content"></div><div class="foot">Ladder points calculated: 10 overall win / 5 overall draw, plus 2 per rink win / 1 per rink draw · Moorabbin teams highlighted · Updated automatically every 60 seconds</div></main>
 <script>
 const API='https://api.bowlslink.com.au/results-api';
 const CONFIG_CSV='https://docs.google.com/spreadsheets/d/e/2PACX-1vTR-Pnnpz-fVhZss-CL-n9EbRIuyBrxVyyzHGfvMN8aABznnqHwN7XdnvYVsYaqeg/pub?gid=1080033371&single=true&output=csv';
@@ -26,12 +26,47 @@ async function loadConfig(){const r=await fetch(CONFIG_CSV+'&_='+Date.now(),{cac
 async function get(path){const r=await fetch(API+path+'?v='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status+' '+r.statusText);return r.json();}
 function includes(p,t){return (p.include||[]).filter(x=>x.type===t)}function attrMap(p,t){const o={};includes(p,t).forEach(x=>o[x.id]=x.attributes||{});return o;}
 function parseCompetition(p,forcedPool=null){const competitors=attrMap(p,'competitor'),results=attrMap(p,'multiFormatResult'),matches=includes(p,'match');let pool=forcedPool;if(pool===null){const moorId=Object.keys(competitors).find(id=>/moorabbin/i.test(competitors[id].name||''));if(moorId){const mm=matches.find(m=>m.includes?.competitorOne?.id===moorId||m.includes?.competitorTwo?.id===moorId);pool=mm?.attributes?.pool??null;}}
- const rows=pool===null?matches:matches.filter(m=>String(m.attributes?.pool)===String(pool)&&!m.attributes?.isFinalsSeries);const allMatches=[];for(const m of rows){const c1=m.includes?.competitorOne?.id,c2=m.includes?.competitorTwo?.id;if(!c1||!c2)continue;const rid=m.includes?.result?.id,r=rid?results[rid]:null;const completed=!!r?.isCompleted;const s1=completed?Number(r.competitorOneScore??0):null,s2=completed?Number(r.competitorTwoScore??0):null;allMatches.push({id:m.id,round:m.attributes?.round??0,state:m.attributes?.matchState||'',n1:competitors[c1]?.name||'Unknown',n2:competitors[c2]?.name||'Unknown',s1,s2,p1:completed?Number(r.competitorOnePoints??0):0,p2:completed?Number(r.competitorTwoPoints??0):0,resultStatus:r?.status||'',winner:completed?(s1>s2?c1:s2>s1?c2:(r?.winnerId===c1?c1:r?.winnerId===c2?c2:null)):null,c1,c2,completed});}
+ const rows=pool===null?matches:matches.filter(m=>String(m.attributes?.pool)===String(pool)&&!m.attributes?.isFinalsSeries);const allMatches=[];for(const m of rows){const c1=m.includes?.competitorOne?.id,c2=m.includes?.competitorTwo?.id;if(!c1||!c2)continue;const rid=m.includes?.result?.id,r=rid?results[rid]:null;const completed=!!r?.isCompleted||String(m.attributes?.matchState||m.attributes?.state||'').toUpperCase()==='PLAYED';const s1=completed?Number(r.competitorOneScore??0):null,s2=completed?Number(r.competitorTwoScore??0):null;allMatches.push({id:m.id,round:m.attributes?.round??0,state:m.attributes?.matchState||'',n1:competitors[c1]?.name||'Unknown',n2:competitors[c2]?.name||'Unknown',s1,s2,p1:completed?Number(r.competitorOnePoints??0):0,p2:completed?Number(r.competitorTwoPoints??0):0,resultStatus:r?.status||'',winner:completed?(s1>s2?c1:s2>s1?c2:(r?.winnerId===c1?c1:r?.winnerId===c2?c2:null)):null,c1,c2,completed});}
  return {competitors,allMatches,pool};}
-async function computeLadder(p){const stats={};const ensure=id=>stats[id]??={played:0,wins:0,losses:0,draws:0,score:0,against:0,points:0};for(const m of p.allMatches){if(!m.completed||String(m.state).toUpperCase()!=='PLAYED')continue;const a=ensure(m.c1),b=ensure(m.c2);a.played++;b.played++;a.score+=Number(m.s1||0);a.against+=Number(m.s2||0);b.score+=Number(m.s2||0);b.against+=Number(m.s1||0);
- // BowlsLink supplies the awarded match points, including rink points and forfeits.
- a.points+=Number(m.p1||0);b.points+=Number(m.p2||0);if(m.winner===m.c1){a.wins++;b.losses++;}else if(m.winner===m.c2){b.wins++;a.losses++;}else{a.draws++;b.draws++;}}
- return Object.entries(stats).map(([id,s])=>({id,name:p.competitors[id]?.name||'Unknown',...s,diff:s.score-s.against})).sort((a,b)=>b.points-a.points||b.diff-a.diff||b.score-a.score).map((x,i)=>({...x,pos:i+1}));}
+async function rinkResultsFor(match){
+ // Rink scores are supplied by the individual BowlsLink match detail endpoint.
+ const detail=await get('/match/'+encodeURIComponent(match.id));
+ const inc=detail.include||detail.included||[];
+ const playerMap={};inc.filter(x=>x.type==='competitorPlayer').forEach(x=>playerMap[x.id]=x);
+ const out=[];
+ for(const x of inc){
+  if(x.type!=='rinkMatchResult')continue;
+  const a=x.attributes||{},one=x.includes?.competitorOnePlayers||[],two=x.includes?.competitorTwoPlayers||[];
+  const teamIds=refs=>[...new Set(refs.map(z=>playerMap[z.id]?.includes?.competitor?.id).filter(Boolean))];
+  let c1=teamIds(one)[0]||x.includes?.competitorOne?.id||null,c2=teamIds(two)[0]||x.includes?.competitorTwo?.id||null;
+  const rr=x.includes?.rinkMatch?.id||'';
+  const byId=rr===match.id||rr.endsWith('::'+match.id)||rr.endsWith('/'+match.id);
+  if(!byId&&!((c1===match.c1&&c2===match.c2)||(c1===match.c2&&c2===match.c1)))continue;
+  const num=keys=>{for(const k of keys){if(a[k]!==undefined&&a[k]!==null&&a[k]!==''){const n=Number(a[k]);if(Number.isFinite(n))return n;}}return null;};
+  let s1=num(['competitorOneShots','competitorOneScore','scoreOne','teamOneScore','oneScore','shotsOne']);
+  let s2=num(['competitorTwoShots','competitorTwoScore','scoreTwo','teamTwoScore','twoScore','shotsTwo']);
+  if(s1===null||s2===null)continue;
+  if(c1===match.c2&&c2===match.c1)[s1,s2]=[s2,s1];
+  out.push({s1,s2});
+ }
+ return out;
+}
+async function computeLadder(p){
+ const stats={};const ensure=id=>stats[id]??={played:0,wins:0,losses:0,draws:0,score:0,against:0,points:0};
+ for(const m of p.allMatches){
+  if(!m.completed||String(m.state).toUpperCase()!=='PLAYED')continue;
+  const a=ensure(m.c1),b=ensure(m.c2);a.played++;b.played++;
+  a.score+=Number(m.s1||0);a.against+=Number(m.s2||0);b.score+=Number(m.s2||0);b.against+=Number(m.s1||0);
+  // Overall result: 10 points for a win, 5 each for an overall draw.
+  if(Number(m.s1)>Number(m.s2)){a.points+=10;a.wins++;b.losses++;}
+  else if(Number(m.s2)>Number(m.s1)){b.points+=10;b.wins++;a.losses++;}
+  else {a.points+=5;b.points+=5;a.draws++;b.draws++;}
+  // Add 2 points per rink win and 1 point per rink draw.
+  // A forfeit has no played rink results, so only its overall result is scored.
+  try{const rinks=await rinkResultsFor(m);for(const r of rinks){if(r.s1>r.s2)a.points+=2;else if(r.s2>r.s1)b.points+=2;else{a.points+=1;b.points+=1;}}}catch(e){console.warn('Could not retrieve rink points for match '+m.id,e);}
+ }
+ return Object.entries(stats).map(([id,s])=>({id,name:p.competitors[id]?.name||'Unknown',...s,diff:s.score-s.against})).sort((a,b)=>b.points-a.points||b.diff-a.diff||b.score-a.score).map((x,i)=>({...x,pos:i+1}));
+}
 function cardHtml(cfg,ladder,error){const meta=cfg.section===null?'Section auto-detected':`Section ${cfg.section}`;if(error)return `<article class="ladder-card"><div class="card-head"><h3>${esc(cfg.side)}</h3><div class="meta">${esc(cfg.group)} · ${meta}</div></div><div class="notice">Unable to load this competition from BowlsLink. It will be retried automatically.</div></article>`;const body=ladder.length?`<div class="table-wrap"><table><thead><tr><th>Pos</th><th>Club</th><th>P</th><th>W</th><th>L</th><th>D</th><th>For</th><th>Agst</th><th>Diff</th><th>Pts</th></tr></thead><tbody>${ladder.map(x=>`<tr class="${/moorabbin/i.test(x.name)?'highlight':''}"><td>${x.pos}</td><td title="${esc(x.name)}">${esc(x.name)}</td><td>${x.played}</td><td>${x.wins}</td><td>${x.losses}</td><td>${x.draws}</td><td>${x.score}</td><td>${x.against}</td><td>${x.diff>0?'+':''}${x.diff}</td><td>${x.points}</td></tr>`).join('')}</tbody></table></div>`:'<div class="notice">No completed matches recorded yet for this section.</div>';return `<article class="ladder-card"><div class="card-head"><h3>${esc(cfg.side)}</h3><div class="meta">${esc(cfg.group)} · ${meta}</div></div>${body}</article>`;}
 async function refresh(){const status=document.getElementById('status'),error=document.getElementById('error'),host=document.getElementById('content');status.textContent='Reading Pennant Links configuration…';error.style.display='none';try{const cfgs=await loadConfig();if(!cfgs.length)throw Error('No active teams found. Check the Active column in the Pennant Links sheet.');status.textContent=`Loading ladders for ${cfgs.length} active sides…`;const results=await Promise.all(cfgs.map(async c=>{try{const raw=await get('/competition/'+encodeURIComponent(c.id)+'/matches');const parsed=parseCompetition(raw,c.section);return {c,ladder:await computeLadder(parsed)};}catch(e){console.error(c.side,e);return {c,error:e};}}));const groups=[...new Set(results.map(x=>x.c.group))];host.innerHTML=groups.map(g=>`<section class="group"><h2 class="group-title">${esc(g)} Ladders</h2><div class="cards">${results.filter(x=>x.c.group===g).map(x=>cardHtml(x.c,x.ladder,x.error)).join('')}</div></section>`).join('');const failed=results.filter(x=>x.error).length;status.textContent=`${results.length-failed} of ${results.length} ladders loaded${failed?` · ${failed} will retry`:''}`;document.getElementById('updated').textContent='Last updated '+new Date().toLocaleTimeString('en-AU');}catch(e){status.textContent='Unable to load ladders';error.style.display='block';error.textContent=e.message;}}
 document.getElementById('refresh').addEventListener('click',refresh);refresh();setInterval(refresh,60000);
